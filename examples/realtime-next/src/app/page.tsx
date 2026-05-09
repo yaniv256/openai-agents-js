@@ -114,6 +114,9 @@ export default function Home() {
       },
       config: {
         audio: {
+          input: {
+            transcription: { model: 'gpt-4o-mini-transcribe' },
+          },
           output: {
             voice: 'cedar',
           },
