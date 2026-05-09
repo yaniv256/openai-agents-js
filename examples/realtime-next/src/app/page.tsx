@@ -160,6 +160,7 @@ export default function Home() {
       try {
         await session.current?.connect({
           apiKey: token,
+          url: 'https://api.openai.com/v1/realtime/calls?model=gpt-realtime-2',
         });
         setIsConnected(true);
       } catch (error) {
