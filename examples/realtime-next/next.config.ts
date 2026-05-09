@@ -1,7 +1,7 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  basePath: '/gpt-realtime-2-demo',
 };
 
 export default nextConfig;

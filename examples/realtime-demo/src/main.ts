@@ -32,7 +32,7 @@ const weatherAgent = new RealtimeAgent({
 const agent = new RealtimeAgent({
   name: 'Greeter',
   instructions:
-    'You are a greeter. Always greet the user with a "top of the morning"',
+    'You are a helpful assistant. Greet the user with "top of the morning" once at the start of the conversation, then respond naturally without repeating the greeting.',
   handoffs: [weatherAgent],
 });
 
@@ -46,14 +46,16 @@ session.on('transport_event', (event) => {
 });
 
 connectButton.addEventListener('click', async () => {
-  const apiKey = prompt(
-    'Enter ephemeral API key. Run `pnpm -F realtime-demo generate-token` to get a token.',
-  );
-  if (!apiKey) {
+  // Fetch ephemeral token from server-side endpoint
+  const tokenRes = await fetch('/gpt-realtime-2-console/token');
+  if (!tokenRes.ok) {
+    log({ type: 'error', error: `Failed to get token: ${tokenRes.status}` });
     return;
   }
+  const { token: apiKey } = await tokenRes.json();
   await session.connect({
     apiKey,
+    url: 'https://api.openai.com/v1/realtime/calls?model=gpt-realtime-2',
   });
   setButtonStates('unmuted');
 });
