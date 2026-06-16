@@ -8,11 +8,13 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type Mount,
   type SandboxSessionState,
   type TypedMount,
   type WorkspaceArchiveData,
+  type WorkspaceArchiveOptions,
 } from '@openai/agents-core/sandbox';
 import { posix as pathPosix } from 'node:path';
 import {
@@ -29,6 +31,7 @@ import {
   deserializeRemoteSandboxSessionStateValues,
   encodeNativeSnapshotRef,
   materializeEnvironment,
+  providerErrorMessage,
   serializeRemoteSandboxSessionState,
   shellQuote,
   isRecord,
@@ -206,6 +209,7 @@ export interface RunloopSandboxClientOptions extends SandboxClientOptions {
   metadata?: Record<string, string>;
   managedSecrets?: Record<string, string>;
   pauseOnExit?: boolean;
+  archiveLimits?: SandboxArchiveLimits | null;
   userParameters?: RunloopUserParameters;
   env?: Record<string, string>;
   apiKey?: string;
@@ -629,6 +633,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     sdk: RunloopClientLike;
     devbox: RunloopDevboxLike;
     concurrencyLimits?: SandboxConcurrencyLimits;
+    archiveLimits?: SandboxArchiveLimits | null;
   }) {
     super({
       state: args.state,
@@ -636,6 +641,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         providerName: 'RunloopSandboxClient',
         providerId: 'runloop',
         concurrencyLimits: args.concurrencyLimits,
+        archiveLimits: args.archiveLimits,
       },
     });
     this.sdk = args.sdk;
@@ -680,7 +686,10 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     return await this.persistWorkspaceTar();
   }
 
-  async hydrateWorkspace(data: WorkspaceArchiveData): Promise<void> {
+  async hydrateWorkspace(
+    data: WorkspaceArchiveData,
+    options: WorkspaceArchiveOptions = {},
+  ): Promise<void> {
     const snapshotRef = decodeNativeSnapshotRef(data);
     if (snapshotRef?.provider === 'runloop') {
       await this.replaceDevboxFromSnapshot(snapshotRef.snapshotId);
@@ -688,7 +697,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     }
 
     assertTarWorkspacePersistence('RunloopSandboxClient', 'tar');
-    await this.hydrateWorkspaceTar(data);
+    await this.hydrateWorkspaceTar(data, options);
   }
 
   async close(): Promise<void> {
@@ -773,7 +782,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         {
           provider: 'runloop',
           devboxId: this.state.devboxId,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -827,7 +836,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         {
           provider: 'runloop',
           snapshotId,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -844,14 +853,14 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       try {
         await this.unmountActiveMounts();
       } catch (unmountError) {
-        replacementCleanupCause = errorMessage(unmountError);
+        replacementCleanupCause = providerErrorMessage(unmountError);
       }
       try {
         await devbox.shutdown();
       } catch (shutdownError) {
         replacementCleanupCause = replacementCleanupCause
-          ? `${replacementCleanupCause}; ${errorMessage(shutdownError)}`
-          : errorMessage(shutdownError);
+          ? `${replacementCleanupCause}; ${providerErrorMessage(shutdownError)}`
+          : providerErrorMessage(shutdownError);
       }
       this.devbox = previousDevbox;
       this.state.devboxId = previousDevboxId;
@@ -867,7 +876,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
           devboxId: previousDevboxId,
           replacementDevboxId: devbox.id,
           snapshotId,
-          cause: errorMessage(error),
+          cause: providerErrorMessage(error),
           ...(replacementCleanupCause ? { replacementCleanupCause } : {}),
         },
       );
@@ -880,14 +889,14 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       try {
         await this.unmountActiveMounts();
       } catch (unmountError) {
-        replacementShutdownCause = errorMessage(unmountError);
+        replacementShutdownCause = providerErrorMessage(unmountError);
       }
       try {
         await devbox.shutdown();
       } catch (replacementShutdownError) {
         replacementShutdownCause = replacementShutdownCause
-          ? `${replacementShutdownCause}; ${errorMessage(replacementShutdownError)}`
-          : errorMessage(replacementShutdownError);
+          ? `${replacementShutdownCause}; ${providerErrorMessage(replacementShutdownError)}`
+          : providerErrorMessage(replacementShutdownError);
       }
       this.devbox = previousDevbox;
       this.state.devboxId = previousDevboxId;
@@ -903,7 +912,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
           devboxId: previousDevbox.id,
           replacementDevboxId: devbox.id,
           snapshotId,
-          cause: errorMessage(error),
+          cause: providerErrorMessage(error),
           ...(replacementShutdownCause ? { replacementShutdownCause } : {}),
         },
       );
@@ -1255,7 +1264,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         {
           provider: 'runloop',
           port,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -1419,6 +1428,7 @@ export class RunloopSandboxClient implements SandboxClient<
           sdk,
           devbox,
           concurrencyLimits: createArgs.concurrencyLimits,
+          archiveLimits: createArgs.archiveLimits,
           state: {
             manifest,
             devboxId: devbox.id,
@@ -1536,6 +1546,7 @@ export class RunloopSandboxClient implements SandboxClient<
         state: resumeState,
         sdk,
         devbox,
+        archiveLimits: this.options.archiveLimits,
       });
       try {
         await session.ensureCurrentManifestRoot();
@@ -1969,10 +1980,6 @@ function formatRunloopSecretErrorCause(
   return secretValue ? message.split(secretValue).join('[redacted]') : message;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 async function callRunloopPlatformMethod(
   methodName: string,
   method: RunloopPlatformMethodLike | undefined,
@@ -2020,7 +2027,7 @@ function callRunloopPlatformGetter(
       {
         provider: 'runloop',
         operation: `call platform method ${methodName}`,
-        cause: error instanceof Error ? error.message : String(error),
+        cause: providerErrorMessage(error),
       },
     );
   }

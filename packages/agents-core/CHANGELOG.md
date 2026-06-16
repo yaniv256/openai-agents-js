@@ -1,5 +1,56 @@
 # @openai/agents-core
 
+## 0.11.6
+
+### Patch Changes
+
+- 13f7662: feat: add tracing span lifecycle dispatch helpers
+
+## 0.11.5
+
+### Patch Changes
+
+- 8dc0069: feat: add configurable tracing ID generation
+- d2a4687: feat: add Handoff clone overrides
+- 1ce5404: feat: add opt-in recovery for missing function tools
+- 60bba25: fix: make Runner modelProvider optional
+- 4f28a02: feat: add RunState trace clearing for resumed runs
+- 647810d: feat: add scoped trace context helpers
+- 26624a5: fix: guard session persistence debug env access
+- b84c1c4: feat: add completed tracing lifecycle dispatch helpers
+- cb0b532: fix: restore browser tracing context and add context storage injection
+- 1151713: fix: add public Usage JSON restoration helpers
+
+## 0.11.4
+
+### Patch Changes
+
+- 087ce4b: fix: preserve Conversations reasoning identities without replaying omitted IDs
+- 2c993cf: fix: preserve local approval rejection reasons
+- f36e7b2: fix: abort active tracing exports on shutdown timeout
+
+## 0.11.3
+
+### Patch Changes
+
+- 2d39801: fix: make tracing shutdown best-effort on process exit
+
+## 0.11.2
+
+### Patch Changes
+
+- 3f855d4: fix: allow callback-only handoff hooks without input schemas
+- 077876e: fix: keep output guardrail tripwires behind sibling completion
+- 9e6d1e3: fix: drop reasoning items orphaned by dropped tool calls
+- 2b5c8d2: fix: exclude computer instances from provider detection
+- 398b21f: test: isolate and speed up slow sandbox tests
+- 8e59259: fix: add configurable sandbox archive extraction limits
+- c5731d1: fix: guard no-op tracing span ids
+- 81508e8: fix: preserve GitRepo root subpath aliases while validating unsafe subpaths
+- 8d2f707: fix: preserve latest response id when resuming server-managed runs
+- 6883833: fix: keep trace batch processing alive after exporter errors
+- b0d2a68: fix: validate sandbox GitRepo subpaths before materialization
+
 ## 0.11.1
 
 ### Patch Changes

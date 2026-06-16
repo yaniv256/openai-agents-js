@@ -1,5 +1,68 @@
 # @openai/agents-extensions
 
+## 0.11.6
+
+### Patch Changes
+
+- Updated dependencies [13f7662]
+  - @openai/agents-core@0.11.6
+
+## 0.11.5
+
+### Patch Changes
+
+- 6d61675: fix: #1340 preserve AI SDK output token details in usage tracing
+- Updated dependencies [8dc0069]
+- Updated dependencies [d2a4687]
+- Updated dependencies [1ce5404]
+- Updated dependencies [60bba25]
+- Updated dependencies [4f28a02]
+- Updated dependencies [647810d]
+- Updated dependencies [26624a5]
+- Updated dependencies [b84c1c4]
+- Updated dependencies [cb0b532]
+- Updated dependencies [1151713]
+  - @openai/agents-core@0.11.5
+
+## 0.11.4
+
+### Patch Changes
+
+- Updated dependencies [087ce4b]
+- Updated dependencies [2c993cf]
+- Updated dependencies [f36e7b2]
+  - @openai/agents-core@0.11.4
+
+## 0.11.3
+
+### Patch Changes
+
+- Updated dependencies [2d39801]
+  - @openai/agents-core@0.11.3
+
+## 0.11.2
+
+### Patch Changes
+
+- 19b36e7: fix: avoid duplicating reasoning across parallel tool calls
+- 6abf0c8: fix: include Cloudflare sandbox exec and cleanup error details
+- f87864c: fix: declare missing undici-types dependency
+- c793dfe: fix: include structured sandbox provider error details
+- 398b21f: test: isolate and speed up slow sandbox tests
+- 8e59259: fix: add configurable sandbox archive extraction limits
+- Updated dependencies [3f855d4]
+- Updated dependencies [077876e]
+- Updated dependencies [9e6d1e3]
+- Updated dependencies [2b5c8d2]
+- Updated dependencies [398b21f]
+- Updated dependencies [8e59259]
+- Updated dependencies [c5731d1]
+- Updated dependencies [81508e8]
+- Updated dependencies [8d2f707]
+- Updated dependencies [6883833]
+- Updated dependencies [b0d2a68]
+  - @openai/agents-core@0.11.2
+
 ## 0.11.1
 
 ### Patch Changes

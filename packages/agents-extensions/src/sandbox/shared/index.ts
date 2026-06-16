@@ -80,6 +80,9 @@ export {
   assertRunAsUnsupported,
   closeRemoteSessionOnManifestError,
   isProviderSandboxNotFoundError,
+  providerErrorDetails,
+  providerErrorMessage,
+  providerErrorRetryability,
   withProviderError,
   withSandboxSpan,
 } from './session';

@@ -7,8 +7,17 @@ import {
 } from '@openai/agents-core/_shims';
 import type { Timeout, Timer } from '../shims/interface';
 import { tracing } from '../config';
+import { combineAbortSignals } from '../utils/abortSignals';
+import { NOOP_TRACE_OR_SPAN_ID } from './utils';
 
 type Span = TSpan<any>;
+
+function isNoopSpan(span: Span): boolean {
+  return (
+    span.traceId === NOOP_TRACE_OR_SPAN_ID ||
+    span.spanId === NOOP_TRACE_OR_SPAN_ID
+  );
+}
 
 /**
  * Interface for processing traces
@@ -116,6 +125,7 @@ export class BatchTraceProcessor implements TracingProcessor {
   #timeout: Timeout | null = null;
   #exportInProgress = false;
   #timeoutAbortController: AbortController | null = null;
+  #activeExportAbortControllers = new Set<AbortController>();
 
   constructor(
     exporter: TracingExporter,
@@ -175,7 +185,10 @@ export class BatchTraceProcessor implements TracingProcessor {
     }
   }
 
-  async #exportBatches(force: boolean = false): Promise<void> {
+  async #exportBatches(
+    force: boolean = false,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (this.#buffer.length === 0) {
       return;
     }
@@ -186,12 +199,20 @@ export class BatchTraceProcessor implements TracingProcessor {
 
     const exportBatch = async (batch: Array<Trace | Span>): Promise<void> => {
       this.#exportInProgress = true;
+      const activeExportAbortController = new AbortController();
+      this.#activeExportAbortControllers.add(activeExportAbortController);
+      const combinedSignal = combineAbortSignals(
+        signal,
+        activeExportAbortController.signal,
+      );
       try {
-        await this.#exporter.export(batch);
+        await this.#exporter.export(batch, combinedSignal.signal);
       } catch (error) {
         logger.error('Tracing exporter failed to export batch', error);
       } finally {
-        this.#exportInProgress = false;
+        combinedSignal.cleanup();
+        this.#activeExportAbortControllers.delete(activeExportAbortController);
+        this.#exportInProgress = this.#activeExportAbortControllers.size > 0;
       }
     };
 
@@ -203,6 +224,37 @@ export class BatchTraceProcessor implements TracingProcessor {
       const batch = this.#buffer.splice(0, this.#maxBatchSize);
       await exportBatch(batch);
     }
+  }
+
+  #abortActiveExports(): void {
+    for (const controller of this.#activeExportAbortControllers) {
+      controller.abort();
+    }
+  }
+
+  async #waitForShutdownProgress(signal?: AbortSignal): Promise<void> {
+    await new Promise<void>((resolve) => {
+      if (signal?.aborted) {
+        resolve();
+        return;
+      }
+
+      const state: { timeout?: Timeout } = {};
+      const cleanup = () => {
+        if (state.timeout) {
+          this.#timer.clearTimeout(state.timeout);
+        }
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const done = () => {
+        cleanup();
+        resolve();
+      };
+      const onAbort = () => done();
+
+      state.timeout = this.#timer.setTimeout(done, 500);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   async onTraceStart(trace: Trace): Promise<void> {
@@ -222,34 +274,50 @@ export class BatchTraceProcessor implements TracingProcessor {
   }
 
   async shutdown(timeout?: number): Promise<void> {
+    let shutdownTimeout: Timeout | undefined;
+    const shutdownAbortController = timeout
+      ? (this.#timeoutAbortController ?? new AbortController())
+      : undefined;
+
     if (timeout) {
-      this.#timer.setTimeout(() => {
-        // force shutdown the HTTP request
-        this.#timeoutAbortController?.abort();
+      this.#timeoutAbortController = shutdownAbortController ?? null;
+      shutdownTimeout = this.#timer.setTimeout(() => {
+        // Force shutdown the HTTP request.
+        shutdownAbortController?.abort();
+        this.#abortActiveExports();
       }, timeout);
+
+      if (typeof shutdownTimeout.unref === 'function') {
+        shutdownTimeout.unref();
+      }
     }
 
-    logger.debug('Shutting down gracefully');
-    while (this.#buffer.length > 0) {
-      logger.debug(
-        `Waiting for buffer to empty. Items left: ${this.#buffer.length}`,
-      );
-      if (!this.#exportInProgress) {
-        // no current export in progress. Forcing all items to be exported
-        await this.#exportBatches(true);
+    try {
+      logger.debug('Shutting down gracefully');
+      while (this.#buffer.length > 0 || this.#exportInProgress) {
+        logger.debug(
+          `Waiting for buffer to empty. Items left: ${this.#buffer.length}`,
+        );
+        if (!this.#exportInProgress && this.#buffer.length > 0) {
+          // No current export in progress. Forcing all items to be exported.
+          await this.#exportBatches(true, shutdownAbortController?.signal);
+        }
+        if (shutdownAbortController?.signal.aborted) {
+          logger.debug('Timeout reached, force flushing');
+          break;
+        }
+        // Using setTimeout to add to the event loop and keep this alive until done.
+        await this.#waitForShutdownProgress(shutdownAbortController?.signal);
       }
-      if (this.#timeoutAbortController?.signal.aborted) {
-        logger.debug('Timeout reached, force flushing');
-        await this.#exportBatches(true);
-        break;
+      logger.debug('Buffer empty. Exiting');
+    } finally {
+      if (shutdownTimeout) {
+        this.#timer.clearTimeout(shutdownTimeout);
       }
-      // using setTimeout to add to the event loop and keep this alive until done
-      await new Promise((resolve) => this.#timer.setTimeout(resolve, 500));
-    }
-    logger.debug('Buffer empty. Exiting');
-    if (this.#timer && this.#timeout) {
-      // making sure there are no more requests
-      this.#timer.clearTimeout(this.#timeout);
+      if (this.#timer && this.#timeout) {
+        // Making sure there are no more requests.
+        this.#timer.clearTimeout(this.#timeout);
+      }
     }
   }
 
@@ -305,6 +373,56 @@ export class MultiTracingProcessor implements TracingProcessor {
     for (const processor of this.#processors) {
       await processor.onSpanEnd(span);
     }
+  }
+
+  /**
+   * Dispatches a completed trace lifecycle to every registered processor without
+   * calling Trace.start() or Trace.end().
+   */
+  async dispatchTrace(trace: Trace): Promise<void> {
+    if (trace.traceId === NOOP_TRACE_OR_SPAN_ID) {
+      return;
+    }
+
+    await this.onTraceStart(trace);
+    await this.onTraceEnd(trace);
+  }
+
+  /**
+   * Dispatches a completed span lifecycle to every registered processor without
+   * calling Span.start() or Span.end().
+   */
+  async dispatchSpan(span: Span): Promise<void> {
+    if (isNoopSpan(span)) {
+      return;
+    }
+
+    await this.onSpanStart(span);
+    await this.onSpanEnd(span);
+  }
+
+  /**
+   * Dispatches a span start event to every registered processor without calling
+   * Span.start().
+   */
+  async dispatchSpanStart(span: Span): Promise<void> {
+    if (isNoopSpan(span)) {
+      return;
+    }
+
+    await this.onSpanStart(span);
+  }
+
+  /**
+   * Dispatches a span end event to every registered processor without calling
+   * Span.end().
+   */
+  async dispatchSpanEnd(span: Span): Promise<void> {
+    if (isNoopSpan(span)) {
+      return;
+    }
+
+    await this.onSpanEnd(span);
   }
 
   async shutdown(timeout?: number): Promise<void> {

@@ -11,6 +11,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
@@ -23,6 +24,8 @@ import {
   type ViewImageArgs,
   type WriteStdinArgs,
   type WorkspaceArchiveData,
+  type WorkspaceArchiveOptions,
+  validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
 import {
   assertTarWorkspacePersistence,
@@ -116,6 +119,7 @@ export interface CloudflareSandboxClientOptions extends SandboxClientOptions {
   requestTimeoutMs?: number;
   timeouts?: CloudflareSandboxTimeouts;
   mounts?: Array<Record<string, unknown>>;
+  archiveLimits?: SandboxArchiveLimits | null;
 }
 
 export interface CloudflareSandboxTimeouts {
@@ -141,6 +145,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   private readonly apiKey?: string;
   private readonly ptyProcesses = new PtyProcessRegistry();
   private readonly concurrencyLimits?: SandboxConcurrencyLimits;
+  private archiveLimits?: SandboxArchiveLimits | null;
   private readonly remotePathResolver: RemoteSandboxPathResolver = async (
     path,
     options,
@@ -150,6 +155,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     state: CloudflareSandboxSessionState;
     apiKey?: string;
     concurrencyLimits?: SandboxConcurrencyLimits;
+    archiveLimits?: SandboxArchiveLimits | null;
   }) {
     this.state = {
       ...args.state,
@@ -157,6 +163,12 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     };
     this.apiKey = args.apiKey;
     this.concurrencyLimits = args.concurrencyLimits;
+    this.setArchiveLimits(args.archiveLimits);
+  }
+
+  setArchiveLimits(limits?: SandboxArchiveLimits | null): void {
+    validateSandboxArchiveLimits(limits);
+    this.archiveLimits = limits;
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
@@ -387,9 +399,13 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       return false;
     }
     if (!response.ok) {
-      throw cloudflareProviderHttpError('check running state', response, {
-        sandboxId: this.state.sandboxId,
-      });
+      throw await cloudflareProviderHttpErrorWithBody(
+        'check running state',
+        response,
+        {
+          sandboxId: this.state.sandboxId,
+        },
+      );
     }
     const payload = (await response.json().catch(() => ({}))) as {
       running?: unknown;
@@ -566,11 +582,18 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     return archive;
   }
 
-  async hydrateWorkspace(data: WorkspaceArchiveData): Promise<void> {
+  async hydrateWorkspace(
+    data: WorkspaceArchiveData,
+    options: WorkspaceArchiveOptions = {},
+  ): Promise<void> {
     assertTarWorkspacePersistence('CloudflareSandboxClient', 'tar');
     const archive = toWorkspaceArchiveBytes(data);
     validateWorkspaceTarArchive(archive, {
       allowExternalSymlinkTargets: false,
+      archiveLimits:
+        options.archiveLimits === undefined
+          ? this.archiveLimits
+          : options.archiveLimits,
     });
     const response = await this.fetch(
       `/v1/sandbox/${this.state.sandboxId}/hydrate`,
@@ -610,9 +633,13 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
           },
         );
         if (!response.ok && response.status !== 404) {
-          throw cloudflareProviderHttpError('delete sandbox', response, {
-            sandboxId: this.state.sandboxId,
-          });
+          throw await cloudflareProviderHttpErrorWithBody(
+            'delete sandbox',
+            response,
+            {
+              sandboxId: this.state.sandboxId,
+            },
+          );
         }
       },
     );
@@ -704,9 +731,13 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       },
     );
     if (!response.ok) {
-      throw cloudflareProviderHttpError('execute command', response, {
-        sandboxId: this.state.sandboxId,
-      });
+      throw await cloudflareProviderHttpErrorWithBody(
+        'execute command',
+        response,
+        {
+          sandboxId: this.state.sandboxId,
+        },
+      );
     }
     if (!response.body) {
       throw new SandboxProviderError(
@@ -723,6 +754,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     const decoder = new TextDecoder();
     const reader = response.body.getReader();
     let buffer = '';
+    let rawStream = '';
     let stdout = '';
     let stderr = '';
     let exitCode: number | undefined;
@@ -766,7 +798,9 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       if (chunk.done) {
         break;
       }
-      buffer += decoder.decode(chunk.value, { stream: true });
+      const text = decoder.decode(chunk.value, { stream: true });
+      buffer += text;
+      rawStream += text;
       const { events, remaining } = splitCompleteSseEvents(buffer);
       buffer = remaining;
       for (const part of events) {
@@ -777,19 +811,48 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         processEvent(event);
       }
     }
-    buffer += decoder.decode();
+    const finalText = decoder.decode();
+    buffer += finalText;
+    rawStream += finalText;
     for (const part of collectSseEvents(buffer)) {
       const event = parseSseEvent(part);
       if (event) {
         processEvent(event);
       }
     }
+    if (exitCode === undefined && !stdout && !stderr && rawStream.trim()) {
+      throw new SandboxProviderError(
+        'CloudflareSandboxClient failed to execute command.',
+        {
+          provider: 'cloudflare',
+          operation: 'execute command',
+          sandboxId: this.state.sandboxId,
+          cause: formatCloudflareResponseBody(rawStream),
+        },
+      );
+    }
+
+    const output = [stdout.trimEnd(), stderr.trimEnd()]
+      .filter((value) => value.length > 0)
+      .join('\n');
+    if (exitCode === undefined && output.length === 0) {
+      const cause = formatCloudflareResponseBody(rawStream);
+      if (cause) {
+        throw new SandboxProviderError(
+          'CloudflareSandboxClient failed to execute command.',
+          {
+            provider: 'cloudflare',
+            operation: 'execute command',
+            sandboxId: this.state.sandboxId,
+            cause,
+          },
+        );
+      }
+    }
 
     return {
       exitCode: exitCode ?? 1,
-      output: [stdout.trimEnd(), stderr.trimEnd()]
-        .filter((value) => value.length > 0)
-        .join('\n'),
+      output,
     };
   }
 
@@ -826,7 +889,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       );
     }
     if (!response.ok) {
-      throw cloudflareProviderHttpError('read file', response, {
+      throw await cloudflareProviderHttpErrorWithBody('read file', response, {
         sandboxId: this.state.sandboxId,
         path,
       });
@@ -847,7 +910,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       },
     );
     if (!response.ok) {
-      throw cloudflareProviderHttpError('write file', response, {
+      throw await cloudflareProviderHttpErrorWithBody('write file', response, {
         sandboxId: this.state.sandboxId,
         path,
       });
@@ -1041,9 +1104,13 @@ export class CloudflareSandboxClient implements SandboxClient<
           { workerUrl: normalizedWorkerUrl },
         );
         if (!response.ok) {
-          throw cloudflareProviderHttpError('create sandbox', response, {
-            workerUrl: normalizedWorkerUrl,
-          });
+          throw await cloudflareProviderHttpErrorWithBody(
+            'create sandbox',
+            response,
+            {
+              workerUrl: normalizedWorkerUrl,
+            },
+          );
         }
         const payload = await withProviderError(
           'CloudflareSandboxClient',
@@ -1060,6 +1127,7 @@ export class CloudflareSandboxClient implements SandboxClient<
         const session = new CloudflareSandboxSession({
           apiKey,
           concurrencyLimits: createArgs.concurrencyLimits,
+          archiveLimits: createArgs.archiveLimits,
           state: {
             manifest,
             workerUrl: normalizedWorkerUrl,
@@ -1139,6 +1207,7 @@ export class CloudflareSandboxClient implements SandboxClient<
     assertCloudflareManifestMountsSupported(state.manifest);
 
     const session = new CloudflareSandboxSession({
+      archiveLimits: this.options.archiveLimits,
       state: {
         ...state,
         sandboxId,
@@ -1350,20 +1419,73 @@ async function cloudflareMountError(args: {
   });
 }
 
-function cloudflareProviderHttpError(
+async function cloudflareProviderHttpErrorWithBody(
   operation: string,
   response: Response,
   context: Record<string, unknown> = {},
-): SandboxProviderError {
+): Promise<SandboxProviderError> {
+  const cause = await readCloudflareErrorBody(response);
   return new SandboxProviderError(
-    `CloudflareSandboxClient failed to ${operation}.`,
+    `CloudflareSandboxClient failed to ${operation}${cause ? `: ${cause}` : ''}`,
     {
       provider: 'cloudflare',
       operation,
       status: response.status,
+      retryable: cloudflareRetryabilityForStatus(response.status),
       ...context,
+      ...(cause ? { cause } : {}),
     },
   );
+}
+
+function cloudflareRetryabilityForStatus(status: number): boolean | null {
+  if (status === 500 || status === 503) {
+    return true;
+  }
+  if (status === 400) {
+    return false;
+  }
+  return null;
+}
+
+async function readCloudflareErrorBody(
+  response: Response,
+): Promise<string | undefined> {
+  const body = await response.text().catch(() => '');
+  const formatted = formatCloudflareResponseBody(body);
+  if (formatted && formatted !== 'Not a JSON error response.') {
+    return formatted;
+  }
+  return body.trim()
+    ? `HTTP ${response.status}: ${truncateCloudflareErrorBody(body.trim())}`
+    : `HTTP ${response.status}`;
+}
+
+function formatCloudflareResponseBody(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) {
+    return '';
+  }
+  try {
+    const payload = JSON.parse(trimmed) as unknown;
+    if (isRecord(payload)) {
+      const error = payload.error;
+      const code = payload.code;
+      if (typeof error === 'string' && typeof code === 'string') {
+        return `${code}: ${error}`;
+      }
+      if (typeof error === 'string') {
+        return error;
+      }
+    }
+  } catch {
+    // Fall through to raw text.
+  }
+  return truncateCloudflareErrorBody(trimmed);
+}
+
+function truncateCloudflareErrorBody(body: string): string {
+  return body.length > 500 ? `${body.slice(0, 497)}...` : body;
 }
 
 function waitForCloudflarePtyReady(socket: PtyWebSocket): Promise<void> {

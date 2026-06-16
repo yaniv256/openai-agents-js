@@ -1,5 +1,70 @@
 # @openai/agents-openai
 
+## 0.11.6
+
+### Patch Changes
+
+- f76fc19: fix: populate model and model_config on generation span in streaming mode
+
+  `getStreamedResponse()` in `OpenAIChatCompletionsModel` was not setting `span.spanData.model` or `span.spanData.model_config` on the generation span, causing downstream tracing exporters to report the model as "unknown". The non-streaming `getResponse()` path already set these fields correctly.
+
+- Updated dependencies [13f7662]
+  - @openai/agents-core@0.11.6
+
+## 0.11.5
+
+### Patch Changes
+
+- Updated dependencies [8dc0069]
+- Updated dependencies [d2a4687]
+- Updated dependencies [1ce5404]
+- Updated dependencies [60bba25]
+- Updated dependencies [4f28a02]
+- Updated dependencies [647810d]
+- Updated dependencies [26624a5]
+- Updated dependencies [b84c1c4]
+- Updated dependencies [cb0b532]
+- Updated dependencies [1151713]
+  - @openai/agents-core@0.11.5
+
+## 0.11.4
+
+### Patch Changes
+
+- 087ce4b: fix: preserve Conversations reasoning identities without replaying omitted IDs
+- 5dd3b2f: fix: handle unsupported chat completions tool outputs safely
+- Updated dependencies [087ce4b]
+- Updated dependencies [2c993cf]
+- Updated dependencies [f36e7b2]
+  - @openai/agents-core@0.11.4
+
+## 0.11.3
+
+### Patch Changes
+
+- 2d39801: fix: make tracing shutdown best-effort on process exit
+- Updated dependencies [2d39801]
+  - @openai/agents-core@0.11.3
+
+## 0.11.2
+
+### Patch Changes
+
+- 22461f2: fix: align Chat Completions strict validation for unsupported stream outputs
+- aee260e: fix: add opt-in strict feature validation for Chat Completions models
+- Updated dependencies [3f855d4]
+- Updated dependencies [077876e]
+- Updated dependencies [9e6d1e3]
+- Updated dependencies [2b5c8d2]
+- Updated dependencies [398b21f]
+- Updated dependencies [8e59259]
+- Updated dependencies [c5731d1]
+- Updated dependencies [81508e8]
+- Updated dependencies [8d2f707]
+- Updated dependencies [6883833]
+- Updated dependencies [b0d2a68]
+  - @openai/agents-core@0.11.2
+
 ## 0.11.1
 
 ### Patch Changes

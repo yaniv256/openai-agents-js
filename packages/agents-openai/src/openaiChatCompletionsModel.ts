@@ -204,6 +204,12 @@ export class OpenAIChatCompletionsModel implements Model {
                 ...remainingFunctionData,
               },
             });
+          } else if (tool_call.type === 'custom') {
+            if (this.#strictFeatureValidation) {
+              throw new UserError(
+                'Custom tool calls are not supported by the Chat Completions converter.',
+              );
+            }
           }
         }
       }
@@ -229,6 +235,17 @@ export class OpenAIChatCompletionsModel implements Model {
     const span = request.tracing ? createGenerationSpan() : undefined;
     try {
       if (span) {
+        span.spanData.model = this.#model;
+        span.spanData.model_config = request.modelSettings
+          ? {
+              temperature: request.modelSettings.temperature,
+              top_p: request.modelSettings.topP,
+              frequency_penalty: request.modelSettings.frequencyPenalty,
+              presence_penalty: request.modelSettings.presencePenalty,
+              reasoning_effort: request.modelSettings.reasoning?.effort,
+              verbosity: request.modelSettings.text?.verbosity,
+            }
+          : { base_url: this.#client.baseURL };
         span.start();
         setCurrentSpan(span);
       }
@@ -249,6 +266,7 @@ export class OpenAIChatCompletionsModel implements Model {
       for await (const event of convertChatCompletionsStreamToResponses(
         response,
         stream,
+        { strictFeatureValidation: this.#strictFeatureValidation },
       )) {
         if (
           event.type === 'response_done' &&
@@ -410,7 +428,9 @@ export class OpenAIChatCompletionsModel implements Model {
       parallelToolCalls = request.modelSettings.parallelToolCalls;
     }
 
-    const messages = itemsToMessages(request.input);
+    const messages = itemsToMessages(request.input, {
+      strictFeatureValidation: this.#strictFeatureValidation,
+    });
     if (request.systemInstructions) {
       messages.unshift({
         content: request.systemInstructions,

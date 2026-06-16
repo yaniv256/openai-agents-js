@@ -6,6 +6,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
@@ -15,6 +16,7 @@ import {
   type TypedMount,
   type WriteStdinArgs,
   type WorkspaceArchiveData,
+  type WorkspaceArchiveOptions,
   normalizeSandboxClientCreateArgs,
 } from '@openai/agents-core/sandbox';
 import {
@@ -32,6 +34,7 @@ import {
   encodeNativeSnapshotRef,
   materializeEnvironment,
   parseExposedPortEndpoint,
+  providerErrorMessage,
   shellQuote,
   shellCommandForPty,
   serializeRemoteSandboxSessionState,
@@ -167,6 +170,7 @@ export interface E2BSandboxClientOptions extends SandboxClientOptions {
   allowInternetAccess?: boolean;
   exposedPorts?: number[];
   workspacePersistence?: E2BWorkspacePersistence;
+  archiveLimits?: SandboxArchiveLimits | null;
   mcp?: Record<string, unknown>;
   pauseOnExit?: boolean;
   env?: Record<string, string>;
@@ -203,6 +207,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
     state: E2BSandboxSessionState;
     sandbox: E2BSandboxInstance;
     concurrencyLimits?: SandboxConcurrencyLimits;
+    archiveLimits?: SandboxArchiveLimits | null;
   }) {
     super({
       state: args.state,
@@ -210,6 +215,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         providerName: 'E2BSandboxClient',
         providerId: 'e2b',
         concurrencyLimits: args.concurrencyLimits,
+        archiveLimits: args.archiveLimits,
       },
     });
     this.sandbox = args.sandbox;
@@ -353,7 +359,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         {
           provider: 'e2b',
           port: requestedPort,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -415,7 +421,10 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
     return await this.persistWorkspaceTar();
   }
 
-  async hydrateWorkspace(data: WorkspaceArchiveData): Promise<void> {
+  async hydrateWorkspace(
+    data: WorkspaceArchiveData,
+    options: WorkspaceArchiveOptions = {},
+  ): Promise<void> {
     const snapshotRef = decodeNativeSnapshotRef(data);
     if (snapshotRef?.provider === 'e2b') {
       await this.replaceSandboxFromSnapshot(snapshotRef.snapshotId);
@@ -428,7 +437,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         this.state.workspacePersistence,
       );
     }
-    await this.hydrateWorkspaceTar(data);
+    await this.hydrateWorkspaceTar(data, options);
   }
 
   private async persistWorkspaceViaNativeSnapshot(): Promise<
@@ -450,7 +459,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         {
           provider: 'e2b',
           sandboxId: this.state.sandboxId,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -494,7 +503,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         {
           provider: 'e2b',
           snapshotId,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -511,7 +520,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
           sandboxId: previousSandbox.sandboxId,
           replacementSandboxId: sandbox.sandboxId,
           snapshotId,
-          cause: error instanceof Error ? error.message : String(error),
+          cause: providerErrorMessage(error),
         },
       );
     }
@@ -604,14 +613,8 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
             provider: 'e2b',
             operation,
             sandboxId: this.state.sandboxId,
-            pauseCause:
-              pauseError instanceof Error
-                ? pauseError.message
-                : String(pauseError),
-            killCause:
-              killError instanceof Error
-                ? killError.message
-                : String(killError),
+            pauseCause: providerErrorMessage(pauseError),
+            killCause: providerErrorMessage(killError),
           },
         );
       }
@@ -881,6 +884,7 @@ export class E2BSandboxClient implements SandboxClient<
         const session = new E2BSandboxSession({
           sandbox,
           concurrencyLimits: createArgs.concurrencyLimits,
+          archiveLimits: createArgs.archiveLimits,
           state: {
             manifest,
             sandboxId: sandbox.sandboxId,
@@ -980,7 +984,11 @@ export class E2BSandboxClient implements SandboxClient<
           state.sandboxId,
           e2bReconnectOptions(state),
         );
-        return new E2BSandboxSession({ state, sandbox });
+        return new E2BSandboxSession({
+          state,
+          sandbox,
+          archiveLimits: this.options.archiveLimits,
+        });
       } catch (error) {
         assertResumeRecreateAllowed(error, {
           providerName: 'E2BSandboxClient',
